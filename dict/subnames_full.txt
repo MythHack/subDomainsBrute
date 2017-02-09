@@ -1,3 +1,6 @@
+{alphnum}
+{alphnum}{alphnum}
+{alphnum}{alphnum}{alphnum}
 www
 blog
 groups
