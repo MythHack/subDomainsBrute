@@ -13,6 +13,7 @@ import threading
 import time
 import optparse
 import re
+import os
 from lib.consle_width import getTerminalSize
 
 
@@ -33,8 +34,9 @@ class SubNameBrute:
             _.lifetime = _.timeout = 6.0
         self._load_next_sub()
         self.queue = Queue.Queue()
-        threading.Thread(target=self._load_sub_names).start()
-        while not self.queue.qsize() > 0:
+        t = threading.Thread(target=self._load_sub_names)
+        t.start()
+        while not self.queue.qsize() > 0 and t.isAlive():
             time.sleep(0.1)
         if options.output:
             outfile = options.output
@@ -66,7 +68,11 @@ class SubNameBrute:
             time.sleep(0.1)
         self.dns_count = len(self.dns_servers)
         sys.stdout.write('\n')
-        print '[+] Found %s available DNS servers in total' % self.dns_count
+        print '[+] Found %s available DNS Servers in total' % self.dns_count
+        if self.dns_count == 0:
+            print '[ERROR] No DNS Servers available.'
+            self.STOP_ME = True
+            sys.exit(-1)
 
     def _test_server(self, server):
         resolver = dns.resolver.Resolver()
@@ -77,7 +83,7 @@ class SubNameBrute:
             if answers[0].address != '180.76.76.76':
                 raise Exception('incorrect DNS response')
             try:
-                resolver.query('test.bad.dns.%s' % self.target)    # Non-existed domain test
+                resolver.query('test.bad.dns.lijiejie.com')    # Non-existed domain test
                 with open('bad_dns_servers.txt', 'a') as f:
                     f.write(server + '\n')
                 self.msg_queue.put('[+] Bad DNS Server found %s' % server)
@@ -89,22 +95,28 @@ class SubNameBrute:
 
     def _load_sub_names(self):
         self.msg_queue.put('[+] Load sub names ...')
-        if self.options.full_scan:
+        if self.options.full_scan and self.options.file == 'subnames.txt':
             _file = 'dict/subnames_full.txt'
         else:
-            _file = 'dict/subnames.txt'
+            if os.path.exists(self.options.file):
+                _file = self.options.file
+            elif os.path.exists('dict/%s' % self.options.file):
+                _file = 'dict/%s' % self.options.file
+            else:
+                self.msg_queue.put('[ERROR] Names file not exists: %s' % self.options.file)
+                return
 
         normal_lines = []
         wildcard_lines = []
         wildcard_list = []
         regex_list = []
-        lines = []
+        lines = set()
         with open(_file) as f:
-            for line in f:
+            for line in f.xreadlines():
                 sub = line.strip()
                 if not sub or sub in lines:
                     continue
-                lines.append(sub)
+                lines.add(sub)
 
                 if sub.find('{alphnum}') >= 0 or sub.find('{alpha}') >= 0 or sub.find('{num}') >= 0:
                     wildcard_lines.append(sub)
@@ -112,6 +124,7 @@ class SubNameBrute:
                     sub = sub.replace('{alpha}', '[a-z]')
                     sub = sub.replace('{num}', '[0-9]')
                     if sub not in wildcard_list:
+                        wildcard_list.append(sub)
                         regex_list.append('^' + sub + '$')
                 else:
                     normal_lines.append(sub)
@@ -234,7 +247,7 @@ class SubNameBrute:
                 try:
                     _lst_subs = self.queue.get(timeout=0.1)
                 except:
-                    if time.time() - self.last_scanned > 2:
+                    if time.time() - self.last_scanned > 2.0:
                         break
                     else:
                         continue
@@ -260,10 +273,18 @@ class SubNameBrute:
                             self.ip_dict[(_sub, ips)] = 1
                         else:
                             self.ip_dict[(_sub, ips)] += 1
-                            if self.ip_dict[(_sub, ips)] > 3:
-                                is_wildcard_record = True
+
+                        if ips not in self.ip_dict:
+                            self.ip_dict[ips] = 1
+                        else:
+                            self.ip_dict[ips] += 1
+
+                        if self.ip_dict[(_sub, ips)] > 3 or self.ip_dict[ips] > 6:
+                            is_wildcard_record = True
+
                         if is_wildcard_record:
                             break
+
                         if (not self.ignore_intranet) or (not SubNameBrute.is_intranet(answers[0].address)):
                             self._update_found_count()
                             msg = cur_sub_domain.ljust(30) + ips
@@ -273,7 +294,7 @@ class SubNameBrute:
                             self.outfile.flush()
 
                             try:
-                                d.resolvers[thread_id].query('lijiejietest.' + cur_sub_domain)
+                                self.resolvers[thread_id].query('lijiejietest.' + cur_sub_domain)
                             except dns.resolver.NXDOMAIN, e:
                                 _lst = []
                                 if_put_one = (self.queue.qsize() < self.dns_count * 5)
@@ -327,8 +348,10 @@ class SubNameBrute:
 
 if __name__ == '__main__':
     parser = optparse.OptionParser('usage: %prog [options] target.com', version="%prog 1.0.4")
+    parser.add_option('-f', dest='file', default='subnames.txt',
+                      help='A file contains new line delimited subs, default is subnames.txt.')
     parser.add_option('--full', dest='full_scan', default=False, action='store_true',
-                      help='Full scan, a large NAMES FILE will be used during the scan')
+                      help='Full scan, NAMES FILE subnames_full.txt will be used to brute')
     parser.add_option('-i', '--ignore-intranet', dest='i', default=False, action='store_true',
                       help='Ignore domains pointed to private IPs')
     parser.add_option('-t', '--threads', dest='threads', default=200, type=int,
